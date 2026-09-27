@@ -13,13 +13,41 @@ function canvasToJpeg(canvas: HTMLCanvasElement): CompressedImage {
   return { mime: "image/jpeg", data, preview };
 }
 
-export function compressFile(file: File): Promise<CompressedImage> {
+function drawImageBitmap(bitmap: ImageBitmap | HTMLImageElement): CompressedImage {
+  const width = "width" in bitmap ? bitmap.width : bitmap.naturalWidth;
+  const height = "height" in bitmap ? bitmap.height : bitmap.naturalHeight;
+  const scale = Math.min(1, MAX_EDGE / Math.max(width, height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Brak canvas");
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  return canvasToJpeg(canvas);
+}
+
+export async function compressFile(file: File): Promise<CompressedImage> {
+  if (typeof createImageBitmap === "function") {
+    try {
+      const bitmap = await createImageBitmap(file);
+      try {
+        return drawImageBitmap(bitmap);
+      } finally {
+        if (typeof bitmap.close === "function") {
+          bitmap.close();
+        }
+      }
+    } catch {
+      // Fallback to the classic image loader for browsers without createImageBitmap.
+    }
+  }
+
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
     img.onload = () => {
       try {
-        resolve(drawImage(img));
+        resolve(drawImageBitmap(img));
       } catch (err) {
         reject(err);
       } finally {
@@ -47,13 +75,3 @@ export function compressVideoFrame(video: HTMLVideoElement): CompressedImage {
   return canvasToJpeg(canvas);
 }
 
-function drawImage(img: HTMLImageElement): CompressedImage {
-  const scale = Math.min(1, MAX_EDGE / Math.max(img.width, img.height));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(img.width * scale));
-  canvas.height = Math.max(1, Math.round(img.height * scale));
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Brak canvas");
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-  return canvasToJpeg(canvas);
-}
