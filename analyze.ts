@@ -17,9 +17,19 @@ type AnalyzeInput = {
 
 const VERDICTS: Verdict[] = ["LEGIT", "LIKELY_LEGIT", "UNCERTAIN", "LIKELY_FAKE", "FAKE"];
 const SOURCES: ValuationSource[] = ["live", "historical", "estimate"];
+const API_BLOCK_TTL_MS = 5 * 60 * 1000;
 
-/** Process-local: after 401/402/403 we skip burning large vision calls. */
-let apiBlocked = false;
+/** Per API key: a single 401/402/403 only blocks that key for a short cooldown. */
+const apiBlockedUntil = new Map<string, number>();
+
+function isApiBlocked(apiKey: string): boolean {
+  const until = apiBlockedUntil.get(apiKey) ?? 0;
+  return Date.now() < until;
+}
+
+function markApiBlocked(apiKey: string): void {
+  apiBlockedUntil.set(apiKey, Date.now() + API_BLOCK_TTL_MS);
+}
 
 const reportJsonSchema = {
   name: "legit_report",
@@ -93,8 +103,8 @@ export const analyzeItem = createServerFn({ method: "POST" })
       const category = CATEGORIES.find((c) => c.id === categoryId);
       if (!category || !categoryId) return { ok: false, error: "Nieznana kategoria." };
 
-      const apiKey = process.env.XAI_API_KEY;
-      if (!apiKey || apiBlocked) {
+      const apiKey = process.env.XAI_API_KEY ?? "";
+      if (!apiKey || isApiBlocked(apiKey)) {
         return {
           ok: true,
           report: buildDemoReport(categoryId, Math.max(photos.length, 1), listingExtra(data.listing)),
@@ -121,7 +131,7 @@ export const analyzeItem = createServerFn({ method: "POST" })
         {
           type: "text",
           text: `Kategoria: ${category.label} (${category.id}).
-Checklista ekspercka:
+Checklist ekspercka:
 ${shotList}
 
 Przeanalizuj załączone zdjęcia jak rzeczoznawca autentyczności.
@@ -180,7 +190,7 @@ Zasady:
         const errText = await res.text().catch(() => "");
         console.error("xAI error", res.status, errText.slice(0, 400));
         if (res.status === 401 || res.status === 402 || res.status === 403) {
-          apiBlocked = true;
+          markApiBlocked(apiKey);
         }
         return { ok: true, report: buildDemoReport(categoryId, photos.length) };
       }
@@ -222,7 +232,7 @@ Zasady:
   });
 
 async function probeApi(apiKey: string): Promise<boolean> {
-  if (apiBlocked) return false;
+  if (isApiBlocked(apiKey)) return false;
   try {
     const res = await fetch("https://api.x.ai/v1/chat/completions", {
       method: "POST",
@@ -238,7 +248,7 @@ async function probeApi(apiKey: string): Promise<boolean> {
       }),
     });
     if (res.status === 401 || res.status === 402 || res.status === 403) {
-      apiBlocked = true;
+      markApiBlocked(apiKey);
       const errText = await res.text().catch(() => "");
       console.error("xAI probe blocked", res.status, errText.slice(0, 200));
       return false;
@@ -352,3 +362,4 @@ function asMissing(value: unknown): AnalysisReport["missingShots"] {
     })
     .filter((s): s is AnalysisReport["missingShots"][number] => Boolean(s && s.label));
 }
+

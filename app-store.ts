@@ -25,6 +25,15 @@ const ANALYZE_LABELS = [
   "Składam raport i ogłoszenie…",
 ];
 
+let draftPersistTimer: number | undefined;
+
+function cancelDraftPersist() {
+  if (draftPersistTimer !== undefined) {
+    window.clearTimeout(draftPersistTimer);
+    draftPersistTimer = undefined;
+  }
+}
+
 type CameraState = { open: boolean; shotId?: string };
 type WebviewState = { title: string; url: string } | null;
 
@@ -72,16 +81,29 @@ type AppStore = {
 };
 
 function persistDraft(state: Pick<AppStore, "categoryId" | "photos" | "phase" | "listingUrl">) {
-  if (!state.categoryId && state.photos.length === 0 && !state.listingUrl) {
-    clearDraft();
-    return;
-  }
-  saveDraft({
+  if (typeof window === "undefined") return;
+
+  const draft = {
     categoryId: state.categoryId,
     photos: state.photos,
     interruptedAnalysis: state.phase === "analyzing",
     listingUrl: state.listingUrl,
-  });
+  };
+
+  if (draftPersistTimer !== undefined) {
+    window.clearTimeout(draftPersistTimer);
+  }
+
+  draftPersistTimer = window.setTimeout(() => {
+    draftPersistTimer = undefined;
+
+    if (!draft.categoryId && draft.photos.length === 0 && !draft.listingUrl) {
+      clearDraft();
+      return;
+    }
+
+    saveDraft(draft);
+  }, 120);
 }
 
 export const useAppStore = create<AppStore>((set, get) => ({
@@ -202,11 +224,13 @@ export const useAppStore = create<AppStore>((set, get) => ({
 
   addFiles: async (files, shotId) => {
     const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
-    for (const file of list) {
-      if (get().photos.length >= 6) break;
+    const tasks = list.slice(0, 6).map(async (file) => {
+      if (get().photos.length >= 6) return;
       const compressed = await compressFile(file);
+      if (get().photos.length >= 6) return;
       get().addCompressedPhoto({ ...compressed, shotId });
-    }
+    });
+    await Promise.all(tasks);
   },
 
   removePhoto: (id) => {
@@ -258,6 +282,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const finish = (report: AnalysisReport) => {
       const history = prependHistory(get().history, report, photos);
       saveHistory(history);
+      cancelDraftPersist();
       clearDraft();
       set({
         phase: "report",
@@ -352,6 +377,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
 
   resetScan: () => {
+    cancelDraftPersist();
     clearDraft();
     set({
       photos: [],
@@ -371,3 +397,4 @@ export const useAppStore = create<AppStore>((set, get) => ({
     set({ history: [] });
   },
 }));
+
